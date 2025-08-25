@@ -102,9 +102,11 @@ class PLCLoggerGUI:
             width=8,
             state="readonly",
         ).grid(column=5, row=1)
-        ttk.Button(data_frame, text="Start", command=self.toggle_polling).grid(column=6, row=1, padx=5)
-        ttk.Button(data_frame, text="Export", command=self.export_excel).grid(column=7, row=1)
-        ttk.Button(data_frame, text="Clear", command=self.clear_data).grid(column=8, row=1)
+        ttk.Button(data_frame, text="Start", command=self.start_polling).grid(column=6, row=1, padx=5)
+        ttk.Button(data_frame, text="Stop", command=self.stop_polling).grid(column=7, row=1)
+        ttk.Button(data_frame, text="Resume", command=self.resume_polling).grid(column=8, row=1)
+        ttk.Button(data_frame, text="Export", command=self.export_excel).grid(column=9, row=1)
+        ttk.Button(data_frame, text="Clear", command=self.clear_data).grid(column=10, row=1)
 
         # Matplotlib figure
         self.fig = Figure(figsize=(6, 4))
@@ -172,22 +174,39 @@ class PLCLoggerGUI:
         except Exception as exc:  # pragma: no cover - runtime path
             messagebox.showerror("Connection error", str(exc))
 
-    def toggle_polling(self) -> None:
+
+    def start_polling(self) -> None:
         if not self.client:
             messagebox.showwarning("Not connected", "Connect to the PLC first")
             return
-        self.polling = not self.polling
         if self.polling:
-            self.active_vars = []
-            for row in self.variable_rows:
-                self.active_vars.append(
-                    (
-                        int(row["db"].get()),
-                        int(row["start"].get()),
-                        row["type"].get(),
-                    )
+            return
+        self.active_vars = []
+        for row in self.variable_rows:
+            self.active_vars.append(
+                (
+                    int(row["db"].get()),
+                    int(row["start"].get()),
+                    row["type"].get(),
                 )
-            threading.Thread(target=self._poll, daemon=True).start()
+            )
+        self.polling = True
+        threading.Thread(target=self._poll, daemon=True).start()
+
+    def stop_polling(self) -> None:
+        self.polling = False
+
+    def resume_polling(self) -> None:
+        if not self.client:
+            messagebox.showwarning("Not connected", "Connect to the PLC first")
+            return
+        if self.polling:
+            return
+        if not self.active_vars:
+            self.start_polling()
+            return
+        self.polling = True
+        threading.Thread(target=self._poll, daemon=True).start()
 
     def _poll(self) -> None:
         interval = float(self.interval_var.get())
@@ -222,8 +241,9 @@ class PLCLoggerGUI:
                 if col == "timestamp":
                     continue
                 parts = col.split("_")
-                label = f"{parts[0]}.{parts[1]}" if len(parts) >= 2 else col
                 values = self.data_df[col]
+                last_val = values.iloc[-1]
+                label = f"{parts[0]}.{parts[1]} ({last_val})" if len(parts) >= 2 else f"{col} ({last_val})"
                 if self.graph_type_var.get() == "Scatter":
                     self.ax.scatter(times, values, s=10, label=label)
                 else:
@@ -240,7 +260,12 @@ class PLCLoggerGUI:
             defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx")]
         )
         if file_path:
-            self.data_df.to_excel(file_path, index=False)
+            try:
+                with pd.ExcelWriter(file_path, engine="openpyxl") as writer:
+                    self.data_df.to_excel(writer, index=False)
+            except ImportError:
+                messagebox.showerror("Export error", "openpyxl is required to export Excel files")
+                return
             messagebox.showinfo("Exported", f"Data exported to {file_path}")
 
     def clear_data(self) -> None:
