@@ -222,7 +222,13 @@ class PLCLoggerGUI:
                     value = _parse_data(raw, data_type)
                     col = f"DB{db}_{start}_{data_type}"
                     row[col] = value
-                self.data_df = pd.concat([self.data_df, pd.DataFrame([row])], ignore_index=True)
+                if self.data_df.empty:
+                    self.data_df = pd.DataFrame([row])
+                else:
+                    for col in row.keys():
+                        if col not in self.data_df.columns:
+                            self.data_df[col] = float('nan')
+                    self.data_df.loc[len(self.data_df)] = row
                 self._append_temp_file(pd.DataFrame([row]))
                 self._update_plot()
             except Exception as exc:  # pragma: no cover - runtime path
