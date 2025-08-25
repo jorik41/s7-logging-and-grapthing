@@ -1,11 +1,14 @@
+import os
 import threading
 import time
 from datetime import datetime
+import tempfile
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import filedialog, messagebox, ttk
 
 import matplotlib
-matplotlib.use('TkAgg')
+
+matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
@@ -41,11 +44,6 @@ class PLCLoggerGUI:
         self.rack_var = tk.StringVar(value="0")
         self.slot_var = tk.StringVar(value="1")
 
-        # DB read parameters
-        self.db_var = tk.StringVar(value="1")
-        self.start_var = tk.StringVar(value="0")
-        self.data_type_var = tk.StringVar(value="REAL")
-
         # Polling interval in seconds
         self.interval_var = tk.StringVar(value="1.0")
 
@@ -54,9 +52,19 @@ class PLCLoggerGUI:
 
         self.client = None
         self.polling = False
-        self.data = []
+
+        # Dynamic variable rows
+        self.variable_rows = []
+        self.active_vars = []
+
+        # Data storage
+        self.temp_file = os.path.join(tempfile.gettempdir(), "plc_logger_temp.csv")
+        self.data_df = pd.DataFrame()
 
         self._build_ui()
+        self._load_temp_data()
+        if not self.variable_rows:
+            self._add_variable_row()
 
     def _build_ui(self) -> None:
         frame = ttk.Frame(self.master)
@@ -76,30 +84,27 @@ class PLCLoggerGUI:
         # Data parameters
         data_frame = ttk.LabelFrame(frame, text="Data")
         data_frame.pack(fill=tk.X, pady=5)
-        ttk.Label(data_frame, text="DB").grid(column=0, row=0)
-        ttk.Entry(data_frame, textvariable=self.db_var, width=5).grid(column=1, row=0)
-        ttk.Label(data_frame, text="Start").grid(column=2, row=0)
-        ttk.Entry(data_frame, textvariable=self.start_var, width=5).grid(column=3, row=0)
-        ttk.Label(data_frame, text="Type").grid(column=4, row=0)
-        ttk.Combobox(
-            data_frame,
-            values=["BOOL", "INT", "DINT", "REAL"],
-            textvariable=self.data_type_var,
-            width=6,
-            state="readonly",
-        ).grid(column=5, row=0)
-        ttk.Label(data_frame, text="Interval (s)").grid(column=6, row=0)
-        ttk.Entry(data_frame, textvariable=self.interval_var, width=5).grid(column=7, row=0)
-        ttk.Label(data_frame, text="Graph").grid(column=8, row=0)
+
+        # Variable rows container
+        self.vars_frame = ttk.Frame(data_frame)
+        self.vars_frame.grid(column=0, row=0, columnspan=12, sticky=tk.W)
+
+        # Controls row
+        ttk.Button(data_frame, text="+", command=self._add_variable_row).grid(column=0, row=1)
+        ttk.Button(data_frame, text="-", command=self._remove_variable_row).grid(column=1, row=1)
+        ttk.Label(data_frame, text="Interval (s)").grid(column=2, row=1)
+        ttk.Entry(data_frame, textvariable=self.interval_var, width=5).grid(column=3, row=1)
+        ttk.Label(data_frame, text="Graph").grid(column=4, row=1)
         ttk.Combobox(
             data_frame,
             values=["Line", "Scatter"],
             textvariable=self.graph_type_var,
             width=8,
             state="readonly",
-        ).grid(column=9, row=0)
-        ttk.Button(data_frame, text="Start", command=self.toggle_polling).grid(column=10, row=0, padx=5)
-        ttk.Button(data_frame, text="Export", command=self.export_excel).grid(column=11, row=0)
+        ).grid(column=5, row=1)
+        ttk.Button(data_frame, text="Start", command=self.toggle_polling).grid(column=6, row=1, padx=5)
+        ttk.Button(data_frame, text="Export", command=self.export_excel).grid(column=7, row=1)
+        ttk.Button(data_frame, text="Clear", command=self.clear_data).grid(column=8, row=1)
 
         # Matplotlib figure
         self.fig = Figure(figsize=(6, 4))
@@ -108,6 +113,45 @@ class PLCLoggerGUI:
         self.ax.set_ylabel("Value")
         self.canvas = FigureCanvasTkAgg(self.fig, master=frame)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+    def _add_variable_row(self, db: str = "1", start: str = "0", data_type: str = "REAL") -> None:
+        row = len(self.variable_rows)
+        db_var = tk.StringVar(value=db)
+        start_var = tk.StringVar(value=start)
+        type_var = tk.StringVar(value=data_type)
+
+        widgets = []
+        widgets.append(ttk.Label(self.vars_frame, text="DB"))
+        widgets[-1].grid(column=0, row=row)
+        widgets.append(ttk.Entry(self.vars_frame, textvariable=db_var, width=5))
+        widgets[-1].grid(column=1, row=row)
+        widgets.append(ttk.Label(self.vars_frame, text="Start"))
+        widgets[-1].grid(column=2, row=row)
+        widgets.append(ttk.Entry(self.vars_frame, textvariable=start_var, width=5))
+        widgets[-1].grid(column=3, row=row)
+        widgets.append(ttk.Label(self.vars_frame, text="Type"))
+        widgets[-1].grid(column=4, row=row)
+        widgets.append(
+            ttk.Combobox(
+                self.vars_frame,
+                values=["BOOL", "INT", "DINT", "REAL"],
+                textvariable=type_var,
+                width=6,
+                state="readonly",
+            )
+        )
+        widgets[-1].grid(column=5, row=row)
+
+        self.variable_rows.append(
+            {"db": db_var, "start": start_var, "type": type_var, "widgets": widgets}
+        )
+
+    def _remove_variable_row(self) -> None:
+        if not self.variable_rows:
+            return
+        row = self.variable_rows.pop()
+        for widget in row["widgets"]:
+            widget.destroy()
 
     def connect(self) -> None:
         if snap7 is None:
@@ -134,19 +178,33 @@ class PLCLoggerGUI:
             return
         self.polling = not self.polling
         if self.polling:
+            self.active_vars = []
+            for row in self.variable_rows:
+                self.active_vars.append(
+                    (
+                        int(row["db"].get()),
+                        int(row["start"].get()),
+                        row["type"].get(),
+                    )
+                )
             threading.Thread(target=self._poll, daemon=True).start()
 
     def _poll(self) -> None:
-        start = int(self.start_var.get())
-        db = int(self.db_var.get())
         interval = float(self.interval_var.get())
-        data_type = self.data_type_var.get()
-        read_len = {"BOOL": 1, "INT": 2, "DINT": 4, "REAL": 4}[data_type]
+        read_settings = []
+        for db, start, data_type in self.active_vars:
+            read_len = {"BOOL": 1, "INT": 2, "DINT": 4, "REAL": 4}[data_type]
+            read_settings.append((db, start, data_type, read_len))
         while self.polling:
+            row = {"timestamp": datetime.now()}
             try:
-                raw = self.client.db_read(db, start, read_len)
-                value = _parse_data(raw, data_type)
-                self.data.append((datetime.now(), value))
+                for db, start, data_type, read_len in read_settings:
+                    raw = self.client.db_read(db, start, read_len)
+                    value = _parse_data(raw, data_type)
+                    col = f"DB{db}_{start}_{data_type}"
+                    row[col] = value
+                self.data_df = pd.concat([self.data_df, pd.DataFrame([row])], ignore_index=True)
+                self._append_temp_file(pd.DataFrame([row]))
                 self._update_plot()
             except Exception as exc:  # pragma: no cover - runtime path
                 self.polling = False
@@ -155,29 +213,64 @@ class PLCLoggerGUI:
             time.sleep(interval)
 
     def _update_plot(self) -> None:
-        times = [t for t, _ in self.data]
-        values = [v for _, v in self.data]
         self.ax.cla()
         self.ax.set_xlabel("Time")
         self.ax.set_ylabel("Value")
-        if self.graph_type_var.get() == "Scatter":
-            self.ax.scatter(times, values, s=10)
-        else:
-            self.ax.plot(times, values, linestyle="-", marker="")
+        if not self.data_df.empty:
+            times = self.data_df["timestamp"]
+            for col in self.data_df.columns:
+                if col == "timestamp":
+                    continue
+                parts = col.split("_")
+                label = f"{parts[0]}.{parts[1]}" if len(parts) >= 2 else col
+                values = self.data_df[col]
+                if self.graph_type_var.get() == "Scatter":
+                    self.ax.scatter(times, values, s=10, label=label)
+                else:
+                    self.ax.plot(times, values, linestyle="-", marker="", label=label)
+            self.ax.legend()
         self.fig.autofmt_xdate()
         self.canvas.draw_idle()
 
     def export_excel(self) -> None:
-        if not self.data:
+        if self.data_df.empty:
             messagebox.showwarning("No data", "Nothing to export yet")
             return
         file_path = filedialog.asksaveasfilename(
             defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx")]
         )
         if file_path:
-            df = pd.DataFrame(self.data, columns=["timestamp", "value"])
-            df.to_excel(file_path, index=False)
+            self.data_df.to_excel(file_path, index=False)
             messagebox.showinfo("Exported", f"Data exported to {file_path}")
+
+    def clear_data(self) -> None:
+        if not messagebox.askyesno("Clear data", "Are you sure you want to clear the data?"):
+            return
+        self.data_df = pd.DataFrame()
+        if os.path.exists(self.temp_file):
+            os.remove(self.temp_file)
+        self._update_plot()
+
+    def _append_temp_file(self, df_row: pd.DataFrame) -> None:
+        header = not os.path.exists(self.temp_file)
+        df_row.to_csv(self.temp_file, mode="a", index=False, header=header)
+
+    def _load_temp_data(self) -> None:
+        if os.path.exists(self.temp_file):
+            try:
+                self.data_df = pd.read_csv(self.temp_file, parse_dates=["timestamp"])
+                for col in self.data_df.columns:
+                    if col == "timestamp":
+                        continue
+                    parts = col.split("_")
+                    if len(parts) == 3:
+                        db = parts[0].replace("DB", "")
+                        start, data_type = parts[1], parts[2]
+                        self._add_variable_row(db, start, data_type)
+                if not self.data_df.empty:
+                    self._update_plot()
+            except Exception:  # pragma: no cover - defensive
+                self.data_df = pd.DataFrame()
 
 
 def main() -> None:
